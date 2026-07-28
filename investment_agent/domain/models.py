@@ -32,6 +32,11 @@ class Holding(BaseModel):
 class Thresholds(BaseModel):
     weight_deviation_pct: float = Field(default=5.0, gt=0, description="Absolute pp from target")
     max_drawdown_pct: float = Field(default=15.0, gt=0)
+    max_volatility_pct: float = Field(
+        default=25.0,
+        gt=0,
+        description="Annualized return volatility threshold (%)",
+    )
     history_period: str = Field(default="1y")
 
 

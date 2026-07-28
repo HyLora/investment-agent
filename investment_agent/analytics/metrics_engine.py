@@ -14,6 +14,8 @@ from investment_agent.domain.models import (
 class MetricsEngine:
     """Computes exact trigger metrics that later ground LLM suggestions."""
 
+    TRADING_DAYS_PER_YEAR = 252
+
     def compute(
         self,
         snapshot: PortfolioSnapshot,
@@ -23,6 +25,7 @@ class MetricsEngine:
         evidence: list[MetricEvidence] = []
         evidence.extend(self._weight_deviations(snapshot, thresholds))
         evidence.extend(self._drawdowns(history, thresholds))
+        evidence.extend(self._volatilities(history, thresholds))
         return evidence
 
     def _weight_deviations(
@@ -90,6 +93,44 @@ class MetricsEngine:
                         "max_drawdown_fraction": max_dd,
                         "peak_date": str(peak_idx) if peak_idx is not None else None,
                         "trough_date": str(trough_idx) if trough_idx is not None else None,
+                        "last_close": float(closes.iloc[-1]),
+                    },
+                )
+            )
+        return items
+
+    def _volatilities(
+        self,
+        history: dict[str, pd.DataFrame],
+        thresholds: Thresholds,
+    ) -> list[MetricEvidence]:
+        items: list[MetricEvidence] = []
+        for symbol, frame in history.items():
+            if "Close" not in frame.columns or len(frame) < 2:
+                continue
+            closes = frame["Close"].astype(float)
+            daily_returns = closes.pct_change().dropna()
+            if daily_returns.empty:
+                continue
+            daily_std = float(daily_returns.std(ddof=1))
+            annualized_pct = daily_std * (self.TRADING_DAYS_PER_YEAR**0.5) * 100.0
+            triggered = annualized_pct >= thresholds.max_volatility_pct
+            items.append(
+                MetricEvidence(
+                    evidence_id=new_evidence_id(MetricKind.VOLATILITY.value, symbol),
+                    kind=MetricKind.VOLATILITY,
+                    symbol=symbol,
+                    value=round(annualized_pct, 4),
+                    threshold=thresholds.max_volatility_pct,
+                    unit="%",
+                    formula=(
+                        "std(daily_returns, ddof=1) * sqrt(252) * 100; "
+                        f"n={len(daily_returns)}"
+                    ),
+                    triggered=triggered,
+                    details={
+                        "daily_std": daily_std,
+                        "observations": len(daily_returns),
                         "last_close": float(closes.iloc[-1]),
                     },
                 )

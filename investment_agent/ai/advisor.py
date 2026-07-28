@@ -56,6 +56,7 @@ class RuleBasedAdvisor(AdvisorPort):
         for symbol, evidences in by_symbol.items():
             weight_ev = next((e for e in evidences if e.kind == MetricKind.WEIGHT_DEVIATION), None)
             dd_ev = next((e for e in evidences if e.kind == MetricKind.DRAWDOWN), None)
+            vol_ev = next((e for e in evidences if e.kind == MetricKind.VOLATILITY), None)
             ids = [e.evidence_id for e in evidences]
             pos = positions.get(symbol)
 
@@ -85,6 +86,11 @@ class RuleBasedAdvisor(AdvisorPort):
                         f" Drawdown massimo osservato: {dd_ev.value:.2f}% "
                         f"(soglia {dd_ev.threshold}%)."
                     )
+                if vol_ev is not None:
+                    rationale += (
+                        f" Volatilità annualizzata: {vol_ev.value:.2f}% "
+                        f"(soglia {vol_ev.threshold}%)."
+                    )
                 suggestions.append(
                     Suggestion(
                         action=action,
@@ -95,15 +101,24 @@ class RuleBasedAdvisor(AdvisorPort):
                         indicative_notional=round(abs(delta_value), 2) if pos else None,
                     )
                 )
-            elif dd_ev is not None:
+            elif dd_ev is not None or vol_ev is not None:
+                parts = []
+                if dd_ev is not None:
+                    parts.append(
+                        f"drawdown {dd_ev.value:.2f}% (soglia {dd_ev.threshold}%)"
+                    )
+                if vol_ev is not None:
+                    parts.append(
+                        f"volatilità annualizzata {vol_ev.value:.2f}% "
+                        f"(soglia {vol_ev.threshold}%)"
+                    )
                 suggestions.append(
                     Suggestion(
                         action=ActionType.REBALANCE,
                         symbol=symbol,
                         rationale_text=(
-                            f"{symbol} ha un drawdown di {dd_ev.value:.2f}% "
-                            f"(soglia {dd_ev.threshold}%). Rivedere l'allocazione; "
-                            "nessun ordine automatico."
+                            f"{symbol}: {'; '.join(parts)}. "
+                            "Rivedere l'allocazione; nessun ordine automatico."
                         ),
                         evidence_ids=ids,
                     )

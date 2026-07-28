@@ -36,7 +36,7 @@ Flusso:
 2. **Analytics** — pesi correnti, scostamento %, drawdown, volatilità  
 3. **Evidence** — ogni metrica fuori soglia diventa `MetricEvidence` con id stabile  
 4. **AI Advisor** — LLM riceve solo evidence; deve citare gli id nelle raccomandazioni  
-5. **Binder** — scarta o marca invalidi i suggerimenti senza metriche collegate  
+5. **Binder** — scarta o marca invalidi i suggerimenti senza metriche collegate; se l'LLM fallisce la validazione, fallback rule-based  
 6. **Report** — export consultivo; nessuna esecuzione
 
 Dettaglio: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
@@ -73,6 +73,7 @@ holdings:
 thresholds:
   weight_deviation_pct: 5.0   # scostamento assoluto dal target (pp)
   max_drawdown_pct: 15.0
+  max_volatility_pct: 25.0    # volatilità annualizzata
 ```
 
 ## Explainability

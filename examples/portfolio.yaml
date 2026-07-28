@@ -14,4 +14,5 @@ holdings:
 thresholds:
   weight_deviation_pct: 5.0
   max_drawdown_pct: 15.0
+  max_volatility_pct: 25.0
   history_period: 1y

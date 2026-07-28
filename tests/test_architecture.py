@@ -115,6 +115,29 @@ def test_drawdown_metric():
     assert dd.triggered is True
 
 
+def test_volatility_metric_triggers():
+    cfg = sample_config(
+        thresholds=Thresholds(weight_deviation_pct=50.0, max_drawdown_pct=99.0, max_volatility_pct=10.0)
+    )
+    snap = PortfolioMonitor().build_snapshot(
+        cfg,
+        {
+            "AAA": MarketQuote(symbol="AAA", price=10.0),
+            "BBB": MarketQuote(symbol="BBB", price=10.0),
+        },
+    )
+    # Highly variable series → elevated annualized vol
+    hist = {
+        "AAA": pd.DataFrame({"Close": [100.0, 130.0, 90.0, 140.0, 80.0, 150.0]}),
+        "BBB": pd.DataFrame({"Close": [100.0, 100.1, 100.0, 100.05, 100.0, 100.02]}),
+    }
+    evidence = MetricsEngine().compute(snap, hist, cfg.thresholds)
+    vol = [e for e in evidence if e.kind == MetricKind.VOLATILITY and e.symbol == "AAA"][0]
+    assert vol.triggered is True
+    assert vol.value >= cfg.thresholds.max_volatility_pct
+    assert "sqrt(252)" in vol.formula
+
+
 def test_binder_rejects_unknown_evidence():
     store = EvidenceStore(
         [
@@ -208,6 +231,40 @@ def test_end_to_end_with_fake_market(tmp_path):
     md = paths["markdown"].read_text(encoding="utf-8")
     assert "Metriche collegate" in md
     assert "Nessun ordine" in md or "non eseguita" in md.lower() or "consultivo" in md.lower()
+
+
+class UngroundedAdvisor:
+    """Advisor that invents evidence ids — must be rejected / fallback."""
+
+    backend_name = "ungrounded_llm"
+
+    def suggest(self, snapshot, store):
+        return [
+            Suggestion(
+                action=ActionType.BUY,
+                symbol="AAA",
+                rationale_text="compra perché sì",
+                evidence_ids=["fabricated-id"],
+            )
+        ]
+
+
+def test_agent_falls_back_when_llm_ungrounded(tmp_path):
+    cfg = sample_config()
+    market = FakeMarketData(
+        prices={"AAA": 20.0, "BBB": 5.0},
+        history={
+            "AAA": pd.DataFrame({"Close": [100.0, 90.0, 85.0]}),
+            "BBB": pd.DataFrame({"Close": [50.0, 50.0, 50.0]}),
+        },
+    )
+    agent = InvestmentAgent(market_data=market, advisor=UngroundedAdvisor())
+    report = agent.run(cfg, output_dir=tmp_path)
+    assert "rule_based_fallback" in report.advisor_backend
+    actionable = [s for s in report.suggestions if s.action != ActionType.HOLD]
+    assert actionable
+    assert all(s.explainability_valid for s in actionable)
+    assert all(s.evidence for s in actionable)
 
 
 def test_config_rejects_bad_weights():
