@@ -1,0 +1,27 @@
+# Agent config for DEGIRO-driven runs (local files only — no bank credentials).
+name: degiro-core-etf
+currency: EUR
+cash: 500.0
+
+# Example target: 80% global equity, 20% bonds
+target_allocation:
+  equity: 0.80
+  bond: 0.20
+
+thresholds:
+  weight_deviation_pct: 5.0
+  max_drawdown_pct: 15.0
+  max_volatility_pct: 25.0
+  history_period: 6mo
+
+# ISIN → yfinance ticker (required when CSV has ISIN but no exchange ticker)
+symbol_map:
+  IE00BK5BQT80: VWCE.DE
+  IE00B4WXJJ64: IEGA.L
+  IE00B5BMR087: SXR8.DE
+
+# Optional explicit asset-class overrides
+asset_class_map:
+  VWCE.DE: equity
+  IEGA.L: bond
+  SXR8.DE: equity

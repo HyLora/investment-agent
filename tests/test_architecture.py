@@ -1,6 +1,9 @@
+"""Tests for InvestmentAgent architecture (DEGIRO ingest, metrics, explainability)."""
+
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -8,21 +11,31 @@ import pytest
 from investment_agent.ai.advisor import RuleBasedAdvisor
 from investment_agent.analytics.metrics_engine import MetricsEngine
 from investment_agent.analytics.portfolio_monitor import PortfolioMonitor
+from investment_agent.config.settings import load_portfolio_from_degiro
 from investment_agent.domain.models import (
     ActionType,
+    AssetClass,
     Holding,
     MarketQuote,
     MetricEvidence,
     MetricKind,
     PortfolioConfig,
     Suggestion,
+    TargetAllocation,
     Thresholds,
     new_evidence_id,
 )
 from investment_agent.explainability.binder import ExplainabilityBinder
 from investment_agent.explainability.evidence import EvidenceStore
+from investment_agent.ingestion.portfolio_parser import (
+    DegiroParseError,
+    parse_degiro_portfolio_csv,
+    positions_to_holdings,
+)
 from investment_agent.orchestration.agent import InvestmentAgent
 from investment_agent.reporting.advisory_report import AdvisoryReportExporter
+
+EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
 
 
 def sample_config(**overrides) -> PortfolioConfig:
@@ -31,8 +44,8 @@ def sample_config(**overrides) -> PortfolioConfig:
         "currency": "EUR",
         "cash": 100.0,
         "holdings": [
-            Holding(symbol="AAA", shares=10, target_weight=0.5),
-            Holding(symbol="BBB", shares=10, target_weight=0.5),
+            Holding(symbol="AAA", shares=10, target_weight=0.5, asset_class=AssetClass.EQUITY),
+            Holding(symbol="BBB", shares=10, target_weight=0.5, asset_class=AssetClass.BOND),
         ],
         "thresholds": Thresholds(weight_deviation_pct=5.0, max_drawdown_pct=10.0),
     }
@@ -52,7 +65,7 @@ class FakeMarketData:
             for s in symbols
         }
 
-    def fetch_history(self, symbols, period="1y"):
+    def fetch_history(self, symbols, period="6mo"):
         out = {}
         for s in symbols:
             if s in self.history:
@@ -126,7 +139,6 @@ def test_volatility_metric_triggers():
             "BBB": MarketQuote(symbol="BBB", price=10.0),
         },
     )
-    # Highly variable series → elevated annualized vol
     hist = {
         "AAA": pd.DataFrame({"Close": [100.0, 130.0, 90.0, 140.0, 80.0, 150.0]}),
         "BBB": pd.DataFrame({"Close": [100.0, 100.1, 100.0, 100.05, 100.0, 100.02]}),
@@ -136,6 +148,79 @@ def test_volatility_metric_triggers():
     assert vol.triggered is True
     assert vol.value >= cfg.thresholds.max_volatility_pct
     assert "sqrt(252)" in vol.formula
+
+
+def test_asset_class_target_allocation_deviation():
+    cfg = PortfolioConfig(
+        name="class-target",
+        cash=0.0,
+        holdings=[
+            Holding(symbol="EQ", shares=80, target_weight=0.0, asset_class=AssetClass.EQUITY),
+            Holding(symbol="BD", shares=20, target_weight=0.0, asset_class=AssetClass.BOND),
+        ],
+        target_allocation=TargetAllocation(weights={AssetClass.EQUITY: 0.8, AssetClass.BOND: 0.2}),
+        thresholds=Thresholds(weight_deviation_pct=5.0),
+    )
+    # Prices make equity 90% / bond 10% => equity +10pp vs 80% target
+    quotes = {
+        "EQ": MarketQuote(symbol="EQ", price=9.0),   # 720
+        "BD": MarketQuote(symbol="BD", price=4.0),   # 80  → total 800
+    }
+    snap = PortfolioMonitor().build_snapshot(cfg, quotes)
+    equity = next(c for c in snap.asset_class_weights if c.asset_class == AssetClass.EQUITY)
+    bond = next(c for c in snap.asset_class_weights if c.asset_class == AssetClass.BOND)
+    assert equity.current_weight == pytest.approx(0.9)
+    assert bond.current_weight == pytest.approx(0.1)
+    assert equity.deviation_pp == pytest.approx(10.0)
+    evidence = MetricsEngine().compute(snap, {}, cfg.thresholds)
+    class_ev = [
+        e for e in evidence if e.kind == MetricKind.ASSET_CLASS_DEVIATION and e.symbol == "EQUITY"
+    ][0]
+    assert class_ev.triggered is True
+    assert class_ev.value == pytest.approx(10.0)
+
+
+def test_degiro_parser_extracts_ticker_qty_avg_cost():
+    path = EXAMPLES / "degiro_portfolio_sample.csv"
+    symbol_map = {
+        "IE00BK5BQT80": "VWCE.DE",
+        "IE00B4WXJJ64": "IEGA.L",
+        "IE00B5BMR087": "SXR8.DE",
+    }
+    positions = parse_degiro_portfolio_csv(path, symbol_map=symbol_map)
+    assert len(positions) == 3
+    vwce = next(p for p in positions if p.symbol == "VWCE.DE")
+    assert vwce.quantity == 40
+    assert vwce.avg_cost == pytest.approx(95.50)
+    assert vwce.isin == "IE00BK5BQT80"
+    holdings = positions_to_holdings(
+        positions,
+        target_allocation=TargetAllocation(weights={AssetClass.EQUITY: 0.8, AssetClass.BOND: 0.2}),
+        asset_class_map={"VWCE.DE": AssetClass.EQUITY, "IEGA.L": AssetClass.BOND, "SXR8.DE": AssetClass.EQUITY},
+    )
+    assert {h.symbol for h in holdings} == {"VWCE.DE", "IEGA.L", "SXR8.DE"}
+    assert next(h for h in holdings if h.symbol == "IEGA.L").asset_class == AssetClass.BOND
+
+
+def test_degiro_parser_requires_symbol_map_for_isin_only_rows(tmp_path):
+    csv_path = tmp_path / "bare.csv"
+    csv_path.write_text(
+        "Product,ISIN,Quantity,Break-even price\nFoo ETF,IE00BK5BQT80,1,10\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(DegiroParseError):
+        parse_degiro_portfolio_csv(csv_path, symbol_map={})
+
+
+def test_load_portfolio_from_degiro_sample():
+    cfg = load_portfolio_from_degiro(
+        EXAMPLES / "degiro_portfolio_sample.csv",
+        EXAMPLES / "target_allocation.yaml",
+    )
+    assert cfg.target_allocation is not None
+    assert cfg.target_allocation.weight_of(AssetClass.EQUITY) == pytest.approx(0.8)
+    assert cfg.thresholds.history_period == "6mo"
+    assert len(cfg.holdings) == 3
 
 
 def test_binder_rejects_unknown_evidence():
@@ -207,6 +292,8 @@ def test_rule_based_advisor_cites_evidence():
     assert actionable
     assert all(s.explainability_valid for s in actionable)
     assert all(s.evidence for s in actionable)
+    # Explainability: rationale must mention numeric deviation
+    assert any("pp" in s.rationale_text for s in actionable)
 
 
 def test_end_to_end_with_fake_market(tmp_path):
@@ -225,12 +312,28 @@ def test_end_to_end_with_fake_market(tmp_path):
     files = list(tmp_path.glob("*"))
     assert any(p.suffix == ".md" for p in files)
     assert any(p.suffix == ".json" for p in files)
-    # Ensure report text includes numeric evidence values for valid suggestions
     exporter = AdvisoryReportExporter()
     paths = exporter.export(report, tmp_path / "again")
     md = paths["markdown"].read_text(encoding="utf-8")
     assert "Metriche collegate" in md
-    assert "Nessun ordine" in md or "non eseguita" in md.lower() or "consultivo" in md.lower()
+    assert "manualmente" in md.lower() or "consultivo" in md.lower()
+
+
+def test_end_to_end_degiro_path(tmp_path):
+    cfg = load_portfolio_from_degiro(
+        EXAMPLES / "degiro_portfolio_sample.csv",
+        EXAMPLES / "target_allocation.yaml",
+    )
+    prices = {"VWCE.DE": 110.0, "IEGA.L": 105.0, "SXR8.DE": 480.0}
+    market = FakeMarketData(
+        prices=prices,
+        history={s: pd.DataFrame({"Close": [100.0, 110.0, 105.0, 108.0]}) for s in prices},
+    )
+    agent = InvestmentAgent(market_data=market, advisor=RuleBasedAdvisor())
+    report = agent.run(cfg, output_dir=tmp_path)
+    assert report.portfolio.asset_class_weights
+    assert any(p.suffix == ".md" for p in tmp_path.glob("*.md"))
+    assert "Nessuna credenziale bancaria" in report.disclaimer
 
 
 class UngroundedAdvisor:
@@ -276,3 +379,11 @@ def test_config_rejects_bad_weights():
                 Holding(symbol="B", shares=1, target_weight=0.7),
             ],
         )
+
+
+def test_no_bank_credentials_in_settings_model():
+    from investment_agent.config.settings import Settings
+
+    fields = set(Settings.model_fields)
+    forbidden = {"bank_password", "degiro_password", "broker_token", "iban"}
+    assert fields.isdisjoint(forbidden)

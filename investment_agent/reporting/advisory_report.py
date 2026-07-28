@@ -1,3 +1,8 @@
+"""Advisory report export (Markdown + JSON).
+
+Actions are listed for manual execution only — this module never places orders.
+"""
+
 from __future__ import annotations
 
 import json
@@ -17,15 +22,25 @@ MARKDOWN_TEMPLATE = Template(
 
 > {{ report.disclaimer }}
 
-## Allocazione corrente
+## Allocazione corrente (ticker)
 
-| Symbol | Shares | Price | Market value | Current % | Target % | Δ pp |
-|--------|-------:|------:|-------------:|----------:|---------:|-----:|
+| Symbol | Shares | Avg cost | Price | Market value | Current % | Target % | Δ pp | Class |
+|--------|-------:|---------:|------:|-------------:|----------:|---------:|-----:|-------|
 {% for p in report.portfolio.positions -%}
-| {{ p.symbol }} | {{ "%.4f"|format(p.shares) }} | {{ "%.4f"|format(p.price) }} | {{ "%.2f"|format(p.market_value) }} | {{ "%.2f"|format(p.current_weight * 100) }} | {{ "%.2f"|format(p.target_weight * 100) }} | {{ "%+.2f"|format(p.weight_deviation_pp) }} |
+| {{ p.symbol }} | {{ "%.4f"|format(p.shares) }} | {{ ("%.4f"|format(p.avg_cost)) if p.avg_cost is not none else "—" }} | {{ "%.4f"|format(p.price) }} | {{ "%.2f"|format(p.market_value) }} | {{ "%.2f"|format(p.current_weight * 100) }} | {{ "%.2f"|format(p.target_weight * 100) }} | {{ "%+.2f"|format(p.weight_deviation_pp) }} | {{ p.asset_class.value }} |
 {% endfor %}
 
-## Metriche (fonte di verità)
+{% if report.portfolio.asset_class_weights %}
+## Target allocation (asset class)
+
+| Class | Current % | Target % | Δ pp | Market value |
+|-------|----------:|---------:|-----:|-------------:|
+{% for c in report.portfolio.asset_class_weights -%}
+| {{ c.asset_class.value }} | {{ "%.2f"|format(c.current_weight * 100) }} | {{ "%.2f"|format(c.target_weight * 100) }} | {{ "%+.2f"|format(c.deviation_pp) }} | {{ "%.2f"|format(c.market_value) }} |
+{% endfor %}
+{% endif %}
+
+## Metriche deterministiche (fonte di verità)
 
 | Evidence ID | Kind | Symbol | Value | Threshold | Unit | Triggered | Formula |
 |-------------|------|--------|------:|----------:|------|:---------:|---------|
@@ -33,7 +48,7 @@ MARKDOWN_TEMPLATE = Template(
 | `{{ e.evidence_id }}` | {{ e.kind.value }} | {{ e.symbol }} | {{ "%.4f"|format(e.value) }} | {{ "%.4f"|format(e.threshold) }} | {{ e.unit }} | {{ "yes" if e.triggered else "no" }} | {{ e.formula }} |
 {% endfor %}
 
-## Suggerimenti (non eseguiti)
+## Azioni consigliate (da eseguire manualmente)
 
 {% if not report.suggestions %}
 _Nessun suggerimento._
@@ -53,7 +68,7 @@ _Nessun suggerimento._
 {% endif -%}
 - **Rationale:** {{ s.rationale_text }}
 
-**Metriche collegate:**
+**Metriche collegate (valori esatti):**
 
 {% if not s.evidence %}
 _Nessuna metrica collegata._
@@ -66,7 +81,7 @@ _Nessuna metrica collegata._
 {% endfor %}
 
 ---
-*InvestmentAgent — solo report consultivo. L'esecuzione degli ordini è interamente a carico dell'utente.*
+*InvestmentAgent — solo report consultivo locale. Nessuna credenziale bancaria. L'esecuzione degli ordini è interamente a carico dell'utente.*
 """
 )
 
@@ -75,6 +90,7 @@ class AdvisoryReportExporter:
     """Exports advisory reports to Markdown and JSON. Never places orders."""
 
     def export(self, report: AdvisoryReport, output_dir: str | Path) -> dict[str, Path]:
+        """Write Markdown (human) and JSON (audit) files under ``output_dir``."""
         out = Path(output_dir)
         out.mkdir(parents=True, exist_ok=True)
         stamp = report.generated_at.strftime("%Y%m%dT%H%M%SZ")

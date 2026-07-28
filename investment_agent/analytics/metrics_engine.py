@@ -1,3 +1,9 @@
+"""Deterministic metrics engine.
+
+Computes exact percentage deviations and risk metrics (drawdown, volatility).
+The LLM must never recalculate these values — it only receives them as evidence.
+"""
+
 from __future__ import annotations
 
 import pandas as pd
@@ -22,8 +28,17 @@ class MetricsEngine:
         history: dict[str, pd.DataFrame],
         thresholds: Thresholds,
     ) -> list[MetricEvidence]:
+        """Return all metric evidence rows for the current snapshot.
+
+        Includes:
+        - per-ticker weight deviation (pp)
+        - asset-class deviation vs ``target_allocation`` (pp)
+        - recent max drawdown from history (%)
+        - annualized volatility (%)
+        """
         evidence: list[MetricEvidence] = []
         evidence.extend(self._weight_deviations(snapshot, thresholds))
+        evidence.extend(self._asset_class_deviations(snapshot, thresholds))
         evidence.extend(self._drawdowns(history, thresholds))
         evidence.extend(self._volatilities(history, thresholds))
         return evidence
@@ -57,6 +72,43 @@ class MetricsEngine:
                         "market_value": pos.market_value,
                         "shares": pos.shares,
                         "price": pos.price,
+                        "asset_class": pos.asset_class.value,
+                        "avg_cost": pos.avg_cost,
+                        "unrealized_pnl_pct": pos.unrealized_pnl_pct,
+                    },
+                )
+            )
+        return items
+
+    def _asset_class_deviations(
+        self,
+        snapshot: PortfolioSnapshot,
+        thresholds: Thresholds,
+    ) -> list[MetricEvidence]:
+        items: list[MetricEvidence] = []
+        for row in snapshot.asset_class_weights:
+            abs_dev = abs(row.deviation_pp)
+            triggered = abs_dev >= thresholds.weight_deviation_pct
+            symbol = row.asset_class.value.upper()
+            items.append(
+                MetricEvidence(
+                    evidence_id=new_evidence_id(MetricKind.ASSET_CLASS_DEVIATION.value, symbol),
+                    kind=MetricKind.ASSET_CLASS_DEVIATION,
+                    symbol=symbol,
+                    value=round(row.deviation_pp, 4),
+                    threshold=thresholds.weight_deviation_pct,
+                    unit="pp",
+                    formula=(
+                        "(class_current_weight - class_target_weight) * 100; "
+                        f"current={row.current_weight:.6f}, target={row.target_weight:.6f}"
+                    ),
+                    triggered=triggered,
+                    details={
+                        "asset_class": row.asset_class.value,
+                        "current_weight": row.current_weight,
+                        "target_weight": row.target_weight,
+                        "abs_deviation_pp": abs_dev,
+                        "market_value": row.market_value,
                     },
                 )
             )
@@ -94,6 +146,7 @@ class MetricsEngine:
                         "peak_date": str(peak_idx) if peak_idx is not None else None,
                         "trough_date": str(trough_idx) if trough_idx is not None else None,
                         "last_close": float(closes.iloc[-1]),
+                        "history_bars": len(closes),
                     },
                 )
             )

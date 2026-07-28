@@ -5,14 +5,20 @@ holdings:
   - symbol: VWCE.DE
     shares: 40
     target_weight: 0.60
+    asset_class: equity
+    avg_cost: 95.0
   - symbol: AGGH.MI
     shares: 80
     target_weight: 0.30
+    asset_class: bond
+    avg_cost: 10.5
   - symbol: SXR8.DE
     shares: 10
     target_weight: 0.10
+    asset_class: equity
+    avg_cost: 420.0
 thresholds:
   weight_deviation_pct: 5.0
   max_drawdown_pct: 15.0
   max_volatility_pct: 25.0
-  history_period: 1y
+  history_period: 6mo
