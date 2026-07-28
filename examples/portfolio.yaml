@@ -1,0 +1,17 @@
+name: core-etf
+currency: EUR
+cash: 1000.0
+holdings:
+  - symbol: VWCE.DE
+    shares: 40
+    target_weight: 0.60
+  - symbol: AGGH.MI
+    shares: 80
+    target_weight: 0.30
+  - symbol: SXR8.DE
+    shares: 10
+    target_weight: 0.10
+thresholds:
+  weight_deviation_pct: 5.0
+  max_drawdown_pct: 15.0
+  history_period: 1y
