@@ -41,6 +41,7 @@ class MetricsEngine:
         evidence.extend(self._asset_class_deviations(snapshot, thresholds))
         evidence.extend(self._drawdowns(history, thresholds))
         evidence.extend(self._volatilities(history, thresholds))
+        evidence.extend(self._period_returns(history, thresholds))
         return evidence
 
     def _weight_deviations(
@@ -185,6 +186,44 @@ class MetricsEngine:
                         "daily_std": daily_std,
                         "observations": len(daily_returns),
                         "last_close": float(closes.iloc[-1]),
+                    },
+                )
+            )
+        return items
+
+    def _period_returns(
+        self,
+        history: dict[str, pd.DataFrame],
+        thresholds: Thresholds,
+    ) -> list[MetricEvidence]:
+        """Observed total return over the history window (not a future forecast)."""
+        items: list[MetricEvidence] = []
+        for symbol, frame in history.items():
+            if "Close" not in frame.columns or len(frame) < 2:
+                continue
+            closes = frame["Close"].astype(float)
+            start = float(closes.iloc[0])
+            end = float(closes.iloc[-1])
+            if start <= 0:
+                continue
+            period_pct = (end / start - 1.0) * 100.0
+            # Informational only — never triggers actions by itself.
+            items.append(
+                MetricEvidence(
+                    evidence_id=new_evidence_id(MetricKind.PERIOD_RETURN.value, symbol),
+                    kind=MetricKind.PERIOD_RETURN,
+                    symbol=symbol,
+                    value=round(period_pct, 4),
+                    threshold=0.0,
+                    unit="%",
+                    formula="(last_close / first_close - 1) * 100 over history window",
+                    triggered=False,
+                    details={
+                        "first_close": start,
+                        "last_close": end,
+                        "bars": len(closes),
+                        "history_period": thresholds.history_period,
+                        "note": "rendimento storico osservato; non è una previsione",
                     },
                 )
             )

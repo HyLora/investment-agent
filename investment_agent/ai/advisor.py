@@ -13,6 +13,7 @@ from typing import Any
 
 from investment_agent.domain.models import (
     ActionType,
+    InvestmentHorizon,
     MetricEvidence,
     MetricKind,
     PortfolioSnapshot,
@@ -36,52 +37,84 @@ class AdvisorPort(ABC):
 
 
 class RuleBasedAdvisor(AdvisorPort):
-    """Deterministic advisor: maps triggered metrics to advisory actions.
+    """Deterministic advisor with long-term / short-term narrative lines.
 
-    Always cites exact evidence_ids — used as offline default and LLM fallback.
-    Rationale text always embeds the numeric deviation / risk values.
+    Always cites exact evidence_ids. 'Guadagno' figures come from observed
+    period returns in MetricEvidence — never invented forecasts.
     """
 
     backend_name = "rule_based"
 
+    LONG_HOLD = "5+ anni"
+    SHORT_HOLD = "3-6 mesi"
+
     def suggest(self, snapshot: PortfolioSnapshot, store: EvidenceStore) -> list[Suggestion]:
+        positions = {p.symbol: p for p in snapshot.positions}
         by_symbol: dict[str, list[MetricEvidence]] = {}
-        for ev in store.triggered():
+        for ev in store.all():
             by_symbol.setdefault(ev.symbol, []).append(ev)
 
-        if not by_symbol:
+        triggered_symbols = {e.symbol for e in store.triggered()}
+        if not triggered_symbols:
             return [
                 Suggestion(
                     action=ActionType.HOLD,
                     symbol="PORTFOLIO",
+                    horizon=InvestmentHorizon.LONG_TERM,
+                    hold_for=self.LONG_HOLD,
+                    headline=(
+                        "Mantieni il portafoglio attuale e lascia investito per "
+                        f"{self.LONG_HOLD}: nessuna metrica oltre soglia."
+                    ),
                     rationale_text="Nessuna metrica oltre soglia: nessun ribilanciamento consigliato.",
                     evidence_ids=[],
                 )
             ]
 
-        positions = {p.symbol: p for p in snapshot.positions}
         suggestions: list[Suggestion] = []
-
-        # Prefer ticker-level actionable suggestions; class-level evidence is
-        # attached when the symbol matches an asset class name.
-        for symbol, evidences in by_symbol.items():
+        for symbol in sorted(triggered_symbols):
+            evidences = by_symbol.get(symbol, [])
             weight_ev = next((e for e in evidences if e.kind == MetricKind.WEIGHT_DEVIATION), None)
             class_ev = next(
                 (e for e in evidences if e.kind == MetricKind.ASSET_CLASS_DEVIATION), None
             )
-            dd_ev = next((e for e in evidences if e.kind == MetricKind.DRAWDOWN), None)
-            vol_ev = next((e for e in evidences if e.kind == MetricKind.VOLATILITY), None)
-            ids = [e.evidence_id for e in evidences]
+            dd_ev = next((e for e in evidences if e.kind == MetricKind.DRAWDOWN and e.triggered), None)
+            vol_ev = next(
+                (e for e in evidences if e.kind == MetricKind.VOLATILITY and e.triggered), None
+            )
+            ret_ev = next((e for e in evidences if e.kind == MetricKind.PERIOD_RETURN), None)
+            hist_ret = ret_ev.value if ret_ev is not None else None
             pos = positions.get(symbol)
 
-            if weight_ev is not None and pos is not None:
+            # --- Long term: allocation / buy-and-hold rebalancing ---
+            if weight_ev is not None and weight_ev.triggered and pos is not None:
+                ids = [e.evidence_id for e in evidences if e.kind in {
+                    MetricKind.WEIGHT_DEVIATION,
+                    MetricKind.PERIOD_RETURN,
+                    MetricKind.DRAWDOWN,
+                    MetricKind.VOLATILITY,
+                }]
                 if weight_ev.value > 0:
                     action = ActionType.SELL
                     target_value = pos.target_weight * snapshot.total_value
                     delta_value = pos.market_value - target_value
                     shares = delta_value / pos.price if pos.price else None
+                    shares_txt = f"{shares:.2f} quote" if shares is not None else "n/d quote"
+                    headline = (
+                        f"Riduci oggi su: {symbol} di circa "
+                        f"{abs(delta_value):.2f} {snapshot.currency} "
+                        f"({shares_txt}) e lascia il resto investito per {self.LONG_HOLD} "
+                        f"per allinearti al target "
+                        f"(oggi sovrappeso di {weight_ev.value:.2f} pp"
+                        + (
+                            f"; rendimento storico osservato {hist_ret:+.2f}%"
+                            if hist_ret is not None
+                            else ""
+                        )
+                        + " — non garanzia futura)."
+                    )
                     rationale = (
-                        f"{symbol} è sovrappesato di {weight_ev.value:.2f} pp rispetto al target "
+                        f"Lungo termine: {symbol} sovrappesato di {weight_ev.value:.2f} pp "
                         f"(soglia {weight_ev.threshold} pp)."
                     )
                 else:
@@ -89,75 +122,152 @@ class RuleBasedAdvisor(AdvisorPort):
                     target_value = pos.target_weight * snapshot.total_value
                     delta_value = target_value - pos.market_value
                     shares = delta_value / pos.price if pos.price else None
+                    shares_txt = f"{shares:.2f} quote" if shares is not None else "n/d quote"
+                    headline = (
+                        f"Investi oggi su: {symbol} circa "
+                        f"{abs(delta_value):.2f} {snapshot.currency} "
+                        f"({shares_txt}) e lascia per {self.LONG_HOLD} "
+                        f"verso il peso target "
+                        f"(oggi sottopeso di {abs(weight_ev.value):.2f} pp"
+                        + (
+                            f"; rendimento storico osservato nella finestra {hist_ret:+.2f}%"
+                            if hist_ret is not None
+                            else ""
+                        )
+                        + " — non garanzia futura)."
+                    )
                     rationale = (
-                        f"{symbol} è sottopesato di {abs(weight_ev.value):.2f} pp rispetto al target "
+                        f"Lungo termine: {symbol} sottopesato di {abs(weight_ev.value):.2f} pp "
                         f"(soglia {weight_ev.threshold} pp)."
                     )
                 rationale += self._risk_clause(dd_ev, vol_ev)
-                if class_ev is not None:
-                    rationale += (
-                        f" Scostamento asset class correlato: {class_ev.value:.2f} pp "
-                        f"su {class_ev.symbol}."
+                suggestions.append(
+                    Suggestion(
+                        action=action,
+                        symbol=symbol,
+                        horizon=InvestmentHorizon.LONG_TERM,
+                        hold_for=self.LONG_HOLD,
+                        headline=headline,
+                        rationale_text=rationale + " Esecuzione manuale a carico dell'utente.",
+                        evidence_ids=ids,
+                        indicative_shares=round(shares, 4) if shares is not None else None,
+                        indicative_notional=round(abs(delta_value), 2),
+                        historical_return_pct=hist_ret,
+                    )
+                )
+
+            # --- Short term: risk / drawdown / volatility driven ---
+            if (dd_ev is not None or vol_ev is not None) and pos is not None:
+                risk_ids = [
+                    e.evidence_id
+                    for e in evidences
+                    if e.kind
+                    in {
+                        MetricKind.DRAWDOWN,
+                        MetricKind.VOLATILITY,
+                        MetricKind.WEIGHT_DEVIATION,
+                        MetricKind.PERIOD_RETURN,
+                    }
+                    and (e.triggered or e.kind == MetricKind.PERIOD_RETURN)
+                ]
+                risk_bits = []
+                if dd_ev is not None:
+                    risk_bits.append(f"drawdown {dd_ev.value:.2f}%")
+                if vol_ev is not None:
+                    risk_bits.append(f"volatilità {vol_ev.value:.2f}%")
+                risk_txt = ", ".join(risk_bits)
+                if weight_ev is not None and weight_ev.value > 0:
+                    action = ActionType.SELL
+                    delta = max(pos.market_value - pos.target_weight * snapshot.total_value, 0)
+                    shares = delta / pos.price if pos.price else None
+                    headline = (
+                        f"Per breve termine: riduci oggi su: {symbol} "
+                        f"(~{delta:.2f} {snapshot.currency}) e rivedi tra {self.SHORT_HOLD} "
+                        f"per contenere il rischio ({risk_txt}"
+                        + (
+                            f"; rendimento storico osservato {hist_ret:+.2f}%"
+                            if hist_ret is not None
+                            else ""
+                        )
+                        + " — non garanzia futura)."
+                    )
+                elif weight_ev is not None and weight_ev.value < 0:
+                    action = ActionType.BUY
+                    delta = max(pos.target_weight * snapshot.total_value - pos.market_value, 0)
+                    shares = delta / pos.price if pos.price else None
+                    headline = (
+                        f"Per breve termine: investi oggi su: {symbol} "
+                        f"(~{delta:.2f} {snapshot.currency}) con orizzonte {self.SHORT_HOLD}, "
+                        f"consapevole del rischio ({risk_txt}"
+                        + (
+                            f"; rendimento storico osservato {hist_ret:+.2f}%"
+                            if hist_ret is not None
+                            else ""
+                        )
+                        + " — non garanzia futura)."
+                    )
+                else:
+                    action = ActionType.REBALANCE
+                    delta = None
+                    shares = None
+                    headline = (
+                        f"Per breve termine: rivedi oggi {symbol} e lascia in osservazione "
+                        f"per {self.SHORT_HOLD} a causa di {risk_txt}"
+                        + (
+                            f" (rendimento storico osservato {hist_ret:+.2f}%)"
+                            if hist_ret is not None
+                            else ""
+                        )
+                        + " — non garanzia futura)."
                     )
                 suggestions.append(
                     Suggestion(
                         action=action,
                         symbol=symbol,
-                        rationale_text=rationale + " Esecuzione manuale a carico dell'utente.",
-                        evidence_ids=ids,
+                        horizon=InvestmentHorizon.SHORT_TERM,
+                        hold_for=self.SHORT_HOLD,
+                        headline=headline,
+                        rationale_text=(
+                            f"Breve termine su {symbol}: {risk_txt}. "
+                            "Nessun ordine automatico."
+                        ),
+                        evidence_ids=risk_ids,
                         indicative_shares=round(shares, 4) if shares is not None else None,
-                        indicative_notional=round(abs(delta_value), 2) if pos else None,
+                        indicative_notional=round(delta, 2) if delta is not None else None,
+                        historical_return_pct=hist_ret,
                     )
                 )
-            elif class_ev is not None:
-                action = ActionType.SELL if class_ev.value > 0 else ActionType.BUY
-                rationale = (
-                    f"Asset class {class_ev.symbol}: scostamento {class_ev.value:.2f} pp "
-                    f"dal target_allocation (soglia {class_ev.threshold} pp)."
-                )
-                rationale += self._risk_clause(dd_ev, vol_ev)
-                suggestions.append(
-                    Suggestion(
-                        action=ActionType.REBALANCE if dd_ev or vol_ev else action,
-                        symbol=symbol,
-                        rationale_text=rationale + " Nessun ordine automatico.",
-                        evidence_ids=ids,
-                    )
-                )
-            elif dd_ev is not None or vol_ev is not None:
-                parts = []
-                if dd_ev is not None:
-                    parts.append(
-                        f"drawdown {dd_ev.value:.2f}% (soglia {dd_ev.threshold}%)"
-                    )
-                if vol_ev is not None:
-                    parts.append(
-                        f"volatilità annualizzata {vol_ev.value:.2f}% "
-                        f"(soglia {vol_ev.threshold}%)"
-                    )
+            elif class_ev is not None and class_ev.triggered and pos is None:
                 suggestions.append(
                     Suggestion(
                         action=ActionType.REBALANCE,
                         symbol=symbol,
-                        rationale_text=(
-                            f"{symbol}: {'; '.join(parts)}. "
-                            "Rivedere l'allocazione; nessun ordine automatico."
+                        horizon=InvestmentHorizon.LONG_TERM,
+                        hold_for=self.LONG_HOLD,
+                        headline=(
+                            f"Ribilancia oggi la classe {symbol}: scostamento "
+                            f"{class_ev.value:.2f} pp dal target, poi lascia per {self.LONG_HOLD}."
                         ),
-                        evidence_ids=ids,
-                    )
-                )
-            else:
-                suggestions.append(
-                    Suggestion(
-                        action=ActionType.REBALANCE,
-                        symbol=symbol,
                         rationale_text=(
-                            f"Metriche oltre soglia per {symbol}: valutare ribilanciamento."
+                            f"Asset class {class_ev.symbol}: scostamento {class_ev.value:.2f} pp "
+                            f"(soglia {class_ev.threshold} pp)."
                         ),
-                        evidence_ids=ids,
+                        evidence_ids=[class_ev.evidence_id],
                     )
                 )
 
+        if not suggestions:
+            return [
+                Suggestion(
+                    action=ActionType.HOLD,
+                    symbol="PORTFOLIO",
+                    horizon=InvestmentHorizon.LONG_TERM,
+                    hold_for=self.LONG_HOLD,
+                    headline=f"Mantieni e lascia investito per {self.LONG_HOLD}.",
+                    rationale_text="Nessuna azione ticker-level generata.",
+                    evidence_ids=[],
+                )
+            ]
         return suggestions
 
     @staticmethod
@@ -177,10 +287,7 @@ class RuleBasedAdvisor(AdvisorPort):
 
 
 class LLMAdvisor(AdvisorPort):
-    """Optional cloud LLM advisor (disabled by default for local-security mode).
-
-    Prefer :class:`OllamaAdvisor` for fully local operation without API keys.
-    """
+    """Optional cloud LLM advisor (disabled by default for local-security mode)."""
 
     backend_name = "llm"
 
@@ -194,7 +301,11 @@ class LLMAdvisor(AdvisorPort):
         from openai import OpenAI
 
         client = OpenAI(api_key=self.api_key)
-        payload = self._build_payload(snapshot, store)
+        payload = {
+            "portfolio": snapshot.model_dump(mode="json"),
+            "evidence": [e.model_dump(mode="json") for e in store.all()],
+            "triggered_evidence_ids": [e.evidence_id for e in store.triggered()],
+        }
         response = client.chat.completions.create(
             model=self.model,
             temperature=0.2,
@@ -205,59 +316,56 @@ class LLMAdvisor(AdvisorPort):
             ],
         )
         content = response.choices[0].message.content or "{}"
-        return self._parse(content)
-
-    def _build_payload(self, snapshot: PortfolioSnapshot, store: EvidenceStore) -> dict[str, Any]:
-        return {
-            "portfolio": snapshot.model_dump(mode="json"),
-            "evidence": [e.model_dump(mode="json") for e in store.all()],
-            "triggered_evidence_ids": [e.evidence_id for e in store.triggered()],
-            "instructions": (
-                "Propose advisory rebalancing only. Do not invent metrics. "
-                "Every non-HOLD suggestion MUST include evidence_ids and MUST quote "
-                "exact deviation_pp and risk parameters from evidence. "
-                "Do not claim orders will be executed."
-            ),
-        }
-
-    def _parse(self, content: str) -> list[Suggestion]:
-        data = json.loads(content)
-        raw_items = data.get("suggestions", data if isinstance(data, list) else [])
-        suggestions: list[Suggestion] = []
-        for item in raw_items:
-            suggestions.append(
-                Suggestion(
-                    action=ActionType(item["action"]),
-                    symbol=str(item["symbol"]).upper(),
-                    rationale_text=str(item["rationale_text"]),
-                    evidence_ids=list(item.get("evidence_ids") or []),
-                    indicative_shares=item.get("indicative_shares"),
-                    indicative_notional=item.get("indicative_notional"),
-                )
-            )
-        return suggestions
+        return _parse_suggestions(content)
 
 
-SYSTEM_PROMPT = """Sei un advisor di portafoglio ETF. Rispondi SOLO con JSON:
+SYSTEM_PROMPT = """Sei un advisor ETF SOLO CONSULENZA. Rispondi SOLO JSON:
 {
   "suggestions": [
     {
       "action": "BUY"|"SELL"|"HOLD"|"REBALANCE",
       "symbol": "TICKER",
-      "rationale_text": "testo breve in italiano con scostamento esatto e parametro di rischio",
-      "evidence_ids": ["id1", ...],
-      "indicative_shares": null o numero,
-      "indicative_notional": null o numero
+      "horizon": "long_term"|"short_term",
+      "hold_for": "5+ anni" oppure "3-6 mesi",
+      "headline": "Investi oggi su: TICKER ... e lascia per ... per guadagno storico osservato di ...% (non garanzia)",
+      "rationale_text": "testo con scostamento esatto e rischio dalle evidence",
+      "evidence_ids": ["id1"],
+      "indicative_shares": null,
+      "indicative_notional": null,
+      "historical_return_pct": null o numero da period_return evidence
     }
   ]
 }
 Regole:
-- Ogni azione diversa da HOLD deve citare evidence_ids esistenti.
-- Non inventare valori numerici: riferisciti alle metriche fornite.
-- Menziona sempre scostamento esatto (pp) e rischio (drawdown/volatilità) dalle evidence.
-- Non eseguire né simulare l'esecuzione di ordini.
-- Se nessuna metrica è triggered, restituisci un solo HOLD su PORTFOLIO.
+- Genera sia suggerimenti long_term sia short_term quando ha senso.
+- Non inventare numeri: usa solo MetricEvidence.
+- 'guadagno' = solo period_return storico osservato, mai previsioni.
+- Non eseguire ordini.
 """
+
+
+def _parse_suggestions(content: str) -> list[Suggestion]:
+    data = json.loads(content)
+    raw_items = data.get("suggestions", data if isinstance(data, list) else [])
+    suggestions: list[Suggestion] = []
+    for item in raw_items:
+        horizon_raw = item.get("horizon")
+        horizon = InvestmentHorizon(horizon_raw) if horizon_raw else None
+        suggestions.append(
+            Suggestion(
+                action=ActionType(item["action"]),
+                symbol=str(item["symbol"]).upper(),
+                rationale_text=str(item["rationale_text"]),
+                evidence_ids=list(item.get("evidence_ids") or []),
+                horizon=horizon,
+                hold_for=item.get("hold_for"),
+                headline=item.get("headline"),
+                indicative_shares=item.get("indicative_shares"),
+                indicative_notional=item.get("indicative_notional"),
+                historical_return_pct=item.get("historical_return_pct"),
+            )
+        )
+    return suggestions
 
 
 def build_advisor(
@@ -268,13 +376,7 @@ def build_advisor(
     ollama_model: str = "llama3.2",
     ollama_base_url: str = "http://127.0.0.1:11434",
 ) -> AdvisorPort:
-    """Select advisor backend.
-
-    Priority for local-security mode:
-    1. Ollama (local, no credentials) when ``prefer_ollama`` and daemon is up
-    2. Optional cloud LLM when ``prefer_llm`` and API key present
-    3. Rule-based fallback (always available offline)
-    """
+    """Select advisor backend (Ollama local → optional cloud → rule-based)."""
     if prefer_ollama:
         from investment_agent.ai.ollama_advisor import try_build_ollama_advisor
 

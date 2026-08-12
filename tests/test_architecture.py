@@ -300,6 +300,32 @@ def test_rule_based_advisor_cites_evidence():
     assert any("pp" in s.rationale_text for s in actionable)
 
 
+def test_rule_based_long_and_short_headlines():
+    from investment_agent.domain.models import InvestmentHorizon
+
+    cfg = sample_config(
+        thresholds=Thresholds(weight_deviation_pct=5.0, max_drawdown_pct=10.0, max_volatility_pct=10.0)
+    )
+    quotes = {
+        "AAA": MarketQuote(symbol="AAA", price=20.0),
+        "BBB": MarketQuote(symbol="BBB", price=5.0),
+    }
+    snap = PortfolioMonitor().build_snapshot(cfg, quotes)
+    hist = {
+        "AAA": pd.DataFrame({"Close": [100.0, 130.0, 70.0, 90.0]}),  # dd + vol
+        "BBB": pd.DataFrame({"Close": [50.0, 50.0, 50.0, 50.0]}),
+    }
+    evidence = MetricsEngine().compute(snap, hist, cfg.thresholds)
+    store = EvidenceStore(evidence)
+    suggestions = RuleBasedAdvisor().suggest(snap, store)
+    long = [s for s in suggestions if s.horizon == InvestmentHorizon.LONG_TERM]
+    short = [s for s in suggestions if s.horizon == InvestmentHorizon.SHORT_TERM]
+    assert long
+    assert any(s.headline and "Investi oggi" in s.headline or (s.headline and "Riduci oggi" in s.headline) for s in long)
+    assert short
+    assert any(s.headline and "breve termine" in s.headline.lower() for s in short)
+
+
 def test_end_to_end_with_fake_market(tmp_path):
     cfg = sample_config()
     market = FakeMarketData(
@@ -319,8 +345,8 @@ def test_end_to_end_with_fake_market(tmp_path):
     exporter = AdvisoryReportExporter()
     paths = exporter.export(report, tmp_path / "again")
     md = paths["markdown"].read_text(encoding="utf-8")
-    assert "Metriche collegate" in md
-    assert "manualmente" in md.lower() or "consultivo" in md.lower()
+    assert "Investimenti a lungo termine" in md
+    assert "manuale" in md.lower() or "consultivo" in md.lower() or "non garanzia" in md.lower()
 
 
 def test_end_to_end_degiro_path(tmp_path):

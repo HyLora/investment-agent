@@ -12,33 +12,37 @@ import urllib.error
 import urllib.request
 from typing import Any
 
-from investment_agent.ai.advisor import AdvisorPort
-from investment_agent.domain.models import ActionType, PortfolioSnapshot, Suggestion
+from investment_agent.ai.advisor import AdvisorPort, _parse_suggestions
+from investment_agent.domain.models import PortfolioSnapshot
 from investment_agent.explainability.evidence import EvidenceStore
 
-OLLAMA_SYSTEM_PROMPT = """Sei un advisor di portafoglio ETF in modalità SOLO CONSULENZA.
-Operi in locale. Non eseguire ordini. Non inventare numeri.
+OLLAMA_SYSTEM_PROMPT = """Sei un advisor ETF in modalità SOLO CONSULENZA (locale).
+Non eseguire ordini. Non inventare numeri.
 
-Ricevi metriche già calcolate (MetricEvidence). Il tuo compito è SOLO narrare
-raccomandazioni di ribilanciamento altamente spiegabili.
+Devi produrre raccomandazioni in italiano in due orizzonti:
+- long_term: "Investi oggi su: TICKER ... e lascia per 5+ anni ..."
+- short_term: "Per breve termine: investi oggi su: TICKER ... e lascia per 3-6 mesi ..."
 
-Regole OBBLIGATORIE:
-1. NON calcolare scostamenti, drawdown o volatilità: usa solo i valori forniti.
-2. Ogni suggerimento diverso da HOLD DEVE includere evidence_ids esistenti.
-3. Nel rationale_text DEVI menzionare esplicitamente:
-   - lo scostamento percentuale esatto (valore + unità dalla evidence), e
-   - il parametro di rischio che lo giustifica (drawdown e/o volatilità se presenti).
-4. Se nessuna metrica è triggered, restituisci un solo HOLD su PORTFOLIO.
-5. Rispondi SOLO con JSON:
+Il 'guadagno' può citare SOLO il period_return storico osservato dalle evidence
+(con la frase 'non garanzia futura'). Mai previsioni inventate.
+
+Regole:
+1. Usa solo MetricEvidence fornite (scostamento, drawdown, volatilità, period_return).
+2. Ogni non-HOLD deve avere evidence_ids esistenti.
+3. Rispondi SOLO JSON:
 {
   "suggestions": [
     {
       "action": "BUY"|"SELL"|"HOLD"|"REBALANCE",
       "symbol": "TICKER",
-      "rationale_text": "testo in italiano con numeri citati dalle evidence",
-      "evidence_ids": ["id1", ...],
-      "indicative_shares": null o numero,
-      "indicative_notional": null o numero
+      "horizon": "long_term"|"short_term",
+      "hold_for": "5+ anni"|"3-6 mesi",
+      "headline": "Investi oggi su: ... e lascia per ... (rendimento storico osservato ...% — non garanzia futura)",
+      "rationale_text": "scostamento esatto + parametro di rischio",
+      "evidence_ids": ["id"],
+      "indicative_shares": null,
+      "indicative_notional": null,
+      "historical_return_pct": null
     }
   ]
 }
@@ -46,10 +50,7 @@ Regole OBBLIGATORIE:
 
 
 class OllamaAdvisor(AdvisorPort):
-    """Explainable advisor backed by a local Ollama HTTP endpoint.
-
-    Default base URL is ``http://127.0.0.1:11434`` — no credentials required.
-    """
+    """Explainable advisor backed by a local Ollama HTTP endpoint."""
 
     backend_name = "ollama"
 
@@ -63,24 +64,20 @@ class OllamaAdvisor(AdvisorPort):
         self.base_url = base_url.rstrip("/")
         self.timeout_sec = timeout_sec
 
-    def suggest(self, snapshot: PortfolioSnapshot, store: EvidenceStore) -> list[Suggestion]:
+    def suggest(self, snapshot: PortfolioSnapshot, store: EvidenceStore):
         """Ask the local LLM for grounded rebalancing suggestions."""
-        payload = self._build_payload(snapshot, store)
-        content = self._chat(payload)
-        return self._parse(content)
-
-    def _build_payload(self, snapshot: PortfolioSnapshot, store: EvidenceStore) -> dict[str, Any]:
-        return {
+        payload = {
             "portfolio": snapshot.model_dump(mode="json"),
             "evidence": [e.model_dump(mode="json") for e in store.all()],
             "triggered_evidence_ids": [e.evidence_id for e in store.triggered()],
             "instructions": (
-                "Propose advisory rebalancing only. Do not invent metrics. "
-                "Every non-HOLD suggestion MUST include evidence_ids from the provided list "
-                "and MUST quote the exact deviation_pp / drawdown / volatility values. "
-                "Do not claim orders will be executed. No bank credentials involved."
+                "Produce long_term and short_term headlines. "
+                "Do not invent metrics. Quote exact deviation and risk from evidence. "
+                "historical_return_pct only from period_return evidence."
             ),
         }
+        content = self._chat(payload)
+        return _parse_suggestions(content)
 
     def _chat(self, user_payload: dict[str, Any]) -> str:
         body = json.dumps(
@@ -110,23 +107,6 @@ class OllamaAdvisor(AdvisorPort):
             ) from exc
         message = raw.get("message") or {}
         return message.get("content") or "{}"
-
-    def _parse(self, content: str) -> list[Suggestion]:
-        data = json.loads(content)
-        raw_items = data.get("suggestions", data if isinstance(data, list) else [])
-        suggestions: list[Suggestion] = []
-        for item in raw_items:
-            suggestions.append(
-                Suggestion(
-                    action=ActionType(item["action"]),
-                    symbol=str(item["symbol"]).upper(),
-                    rationale_text=str(item["rationale_text"]),
-                    evidence_ids=list(item.get("evidence_ids") or []),
-                    indicative_shares=item.get("indicative_shares"),
-                    indicative_notional=item.get("indicative_notional"),
-                )
-            )
-        return suggestions
 
 
 def try_build_ollama_advisor(model: str, base_url: str) -> OllamaAdvisor | None:

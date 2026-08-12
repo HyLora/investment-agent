@@ -99,12 +99,19 @@ def main(argv: list[str] | None = None) -> int:
         report = agent.run(args.portfolio, output_dir=args.output)
 
     valid = sum(1 for s in report.suggestions if s.explainability_valid)
+    paths = getattr(agent, "last_export_paths", {}) or {}
+    latest = paths.get("latest_markdown")
     print(
         f"Report generato per '{report.portfolio.name}': "
         f"{len(report.suggestions)} suggerimenti ({valid} con explainability valida). "
         f"Backend={report.advisor_backend}. "
         "Nessuna credenziale bancaria usata. Nessun ordine eseguito."
     )
+    if latest is not None:
+        print(f"Apri il report: open {latest.resolve()}")
+        for s in report.suggestions:
+            if s.headline:
+                print(f"  • {s.headline}")
     return 0
 
 

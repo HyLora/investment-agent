@@ -51,6 +51,7 @@ class InvestmentAgent:
             ollama_base_url=self.settings.ollama_base_url,
         )
         self._fallback_advisor = RuleBasedAdvisor()
+        self.last_export_paths: dict[str, Path] = {}
 
     def run(
         self,
@@ -87,7 +88,10 @@ class InvestmentAgent:
         suggestions = self.binder.bind(raw_suggestions, store)
         backend = self.advisor.backend_name
 
-        if self._needs_explainability_fallback(suggestions) and not backend.startswith("rule_based"):
+        if (
+            self._needs_explainability_fallback(suggestions)
+            or self._needs_narrative_fallback(suggestions)
+        ) and not backend.startswith("rule_based"):
             raw_suggestions = self._fallback_advisor.suggest(snapshot, store)
             suggestions = self.binder.bind(raw_suggestions, store)
             backend = f"{backend}+rule_based_fallback"
@@ -100,7 +104,7 @@ class InvestmentAgent:
         )
 
         out_dir = output_dir or self.settings.output_dir
-        self.exporter.export(report, out_dir)
+        self.last_export_paths = self.exporter.export(report, out_dir)
         return report
 
     @staticmethod
@@ -125,3 +129,11 @@ class InvestmentAgent:
         if not actionable:
             return False
         return any(not s.explainability_valid for s in actionable)
+
+    @staticmethod
+    def _needs_narrative_fallback(suggestions: list[Suggestion]) -> bool:
+        """True when actionable suggestions miss long/short headline lines."""
+        actionable = [s for s in suggestions if s.action != ActionType.HOLD]
+        if not actionable:
+            return False
+        return any(not s.headline or not s.horizon for s in actionable)

@@ -200,6 +200,7 @@ class MetricKind(str, Enum):
     ASSET_CLASS_DEVIATION = "asset_class_deviation"
     DRAWDOWN = "drawdown"
     VOLATILITY = "volatility"
+    PERIOD_RETURN = "period_return"
 
 
 class MetricEvidence(BaseModel):
@@ -227,6 +228,13 @@ class ActionType(str, Enum):
     REBALANCE = "REBALANCE"
 
 
+class InvestmentHorizon(str, Enum):
+    """Advisory time horizon for narrative report sections."""
+
+    LONG_TERM = "long_term"
+    SHORT_TERM = "short_term"
+
+
 class Suggestion(BaseModel):
     """Advisory suggestion. Never executed by the system."""
 
@@ -234,11 +242,24 @@ class Suggestion(BaseModel):
     symbol: str
     rationale_text: str
     evidence_ids: list[str] = Field(default_factory=list)
+    horizon: InvestmentHorizon | None = None
+    hold_for: str | None = Field(
+        default=None,
+        description="Human hold window, e.g. '5+ anni' or '3-6 mesi'",
+    )
+    headline: str | None = Field(
+        default=None,
+        description="Narrative line: Investi oggi su ... / Riduci oggi ...",
+    )
     indicative_shares: float | None = Field(
         default=None,
         description="Optional non-binding share quantity for the user to consider",
     )
     indicative_notional: float | None = None
+    historical_return_pct: float | None = Field(
+        default=None,
+        description="Observed period return % from history (not a future guarantee)",
+    )
     evidence: list[MetricEvidence] = Field(
         default_factory=list,
         description="Filled by ExplainabilityBinder from evidence_ids",
@@ -263,6 +284,8 @@ class AdvisoryReport(BaseModel):
         "Report consultivo generato da InvestmentAgent in modalità locale. "
         "Nessuna credenziale bancaria è richiesta o memorizzata. "
         "Nessun ordine è stato né sarà eseguito automaticamente. "
+        "I 'guadagni' citati sono rendimenti storici osservati nella finestra di dati, "
+        "NON una garanzia di rendimento futuro. "
         "Verifica i dati e le decisioni di investimento in autonomia. "
         "Non costituisce consulenza finanziaria."
     )
