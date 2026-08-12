@@ -388,6 +388,8 @@ class UngroundedAdvisor:
 
 
 def test_agent_falls_back_when_llm_ungrounded(tmp_path):
+    from investment_agent.config.settings import Settings
+
     cfg = sample_config()
     market = FakeMarketData(
         prices={"AAA": 20.0, "BBB": 5.0},
@@ -396,7 +398,11 @@ def test_agent_falls_back_when_llm_ungrounded(tmp_path):
             "BBB": pd.DataFrame({"Close": [50.0, 50.0, 50.0]}),
         },
     )
-    agent = InvestmentAgent(market_data=market, advisor=UngroundedAdvisor())
+    agent = InvestmentAgent(
+        market_data=market,
+        advisor=UngroundedAdvisor(),
+        settings=Settings(require_ollama=False, prefer_ollama=False),
+    )
     report = agent.run(cfg, output_dir=tmp_path)
     assert "rule_based_fallback" in report.advisor_backend
     actionable = [s for s in report.suggestions if s.action != ActionType.HOLD]

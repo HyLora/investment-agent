@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     ollama_model: str = "llama3.2"
     ollama_base_url: str = "http://127.0.0.1:11434"
     prefer_ollama: bool = True
+    require_ollama: bool = True
     prefer_llm: bool = False
     output_dir: str = "output"
 

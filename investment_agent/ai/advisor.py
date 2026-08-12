@@ -377,18 +377,29 @@ def _parse_suggestions(content: str) -> list[Suggestion]:
 def build_advisor(
     prefer_llm: bool = False,
     prefer_ollama: bool = True,
+    require_ollama: bool = True,
     settings_api_key: str | None = None,
     model: str = "gpt-4o-mini",
     ollama_model: str = "llama3.2",
     ollama_base_url: str = "http://127.0.0.1:11434",
 ) -> AdvisorPort:
-    """Select advisor backend (Ollama local → optional cloud → rule-based)."""
+    """Select advisor backend.
+
+    Default is Ollama-only. If ``require_ollama`` is true and the daemon is
+    down, raises ``ConnectionError`` instead of falling back to rule-based.
+    """
     if prefer_ollama:
         from investment_agent.ai.ollama_advisor import try_build_ollama_advisor
 
         ollama = try_build_ollama_advisor(model=ollama_model, base_url=ollama_base_url)
         if ollama is not None:
             return ollama
+        if require_ollama:
+            raise ConnectionError(
+                f"Ollama non raggiungibile su {ollama_base_url}. "
+                "Avvia l'app Ollama (o `ollama serve`), poi: `ollama pull llama3.2`. "
+                "Per disabilitare Ollama usa --no-ollama."
+            )
 
     if prefer_llm:
         try:

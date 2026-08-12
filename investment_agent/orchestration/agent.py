@@ -45,6 +45,7 @@ class InvestmentAgent:
         self.advisor = advisor or build_advisor(
             prefer_llm=self.settings.prefer_llm,
             prefer_ollama=self.settings.prefer_ollama,
+            require_ollama=self.settings.require_ollama,
             settings_api_key=self.settings.openai_api_key,
             model=self.settings.openai_model,
             ollama_model=self.settings.ollama_model,
@@ -89,9 +90,13 @@ class InvestmentAgent:
         backend = self.advisor.backend_name
 
         if (
-            self._needs_explainability_fallback(suggestions)
-            or self._needs_narrative_fallback(suggestions)
-        ) and not backend.startswith("rule_based"):
+            not self.settings.require_ollama
+            and (
+                self._needs_explainability_fallback(suggestions)
+                or self._needs_narrative_fallback(suggestions)
+            )
+            and not backend.startswith("rule_based")
+        ):
             raw_suggestions = self._fallback_advisor.suggest(snapshot, store)
             suggestions = self.binder.bind(raw_suggestions, store)
             backend = f"{backend}+rule_based_fallback"
