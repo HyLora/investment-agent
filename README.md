@@ -36,17 +36,43 @@ Dettaglio: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ## Quick start
 
+Il comando `investment-agent` esiste **solo dopo** l'installazione del pacchetto
+nella cartella del repository (non dalla home `~`).
+
 ```bash
+# 1. Entra nel clone del repo
+cd /path/to/investment-agent
+
+# 2. Ambiente Python (venv oppure conda)
 python3 -m venv .venv && source .venv/bin/activate
+# oppure: conda create -n investment-agent python=3.11 -y && conda activate investment-agent
+
+# 3. Installa il pacchetto in editable mode (crea il comando CLI)
 pip install -e ".[dev]"
 
-# Da CSV DEGIRO di esempio + target 80% equity / 20% bond
+# 4. Verifica
+which investment-agent
+investment-agent --help
+
+# 5. Run di esempio (path relativi alla root del repo)
 investment-agent run \
   --degiro examples/degiro_portfolio_sample.csv \
   --config examples/target_allocation.yaml \
   --output output/
+```
 
-# Oppure da YAML holdings
+Se `investment-agent` non è ancora nel PATH, usa il modulo direttamente:
+
+```bash
+python -m investment_agent run \
+  --degiro examples/degiro_portfolio_sample.csv \
+  --config examples/target_allocation.yaml \
+  --output output/
+```
+
+Oppure da YAML holdings:
+
+```bash
 investment-agent run --portfolio examples/portfolio.yaml --output output/
 ```
 
