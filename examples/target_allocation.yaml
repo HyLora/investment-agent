@@ -17,11 +17,11 @@ thresholds:
 # ISIN → yfinance ticker (required when CSV has ISIN but no exchange ticker)
 symbol_map:
   IE00BK5BQT80: VWCE.DE
-  IE00B4WXJJ64: IEGA.L
+  IE00B4WXJJ64: EUN6.DE   # iShares Core Euro Govt Bond (Xetra; IEGA.L often missing)
   IE00B5BMR087: SXR8.DE
 
 # Optional explicit asset-class overrides
 asset_class_map:
   VWCE.DE: equity
-  IEGA.L: bond
+  EUN6.DE: bond
   SXR8.DE: equity

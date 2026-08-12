@@ -41,7 +41,11 @@ class YFinanceClient(MarketDataPort):
             ticker = yf.Ticker(symbol)
             price = self._resolve_price(ticker)
             if price is None or price <= 0:
-                raise ValueError(f"Unable to resolve market price for {symbol}")
+                raise ValueError(
+                    f"Unable to resolve market price for {symbol}. "
+                    "Check the yfinance ticker in symbol_map "
+                    "(exchange suffix matters, e.g. VWCE.DE / EUN6.DE)."
+                )
             currency = None
             try:
                 currency = (ticker.fast_info or {}).get("currency")  # type: ignore[union-attr]
@@ -59,7 +63,10 @@ class YFinanceClient(MarketDataPort):
         for symbol in symbols:
             hist = yf.Ticker(symbol).history(period=period, auto_adjust=True)
             if hist is None or hist.empty:
-                raise ValueError(f"No historical data for {symbol} (period={period})")
+                raise ValueError(
+                    f"No historical data for {symbol} (period={period}). "
+                    "Update symbol_map to a liquid exchange listing."
+                )
             out[symbol] = hist
         return out
 
@@ -73,7 +80,11 @@ class YFinanceClient(MarketDataPort):
                     return float(value)
         except Exception:
             pass
-        hist = ticker.history(period="5d", auto_adjust=True)
-        if hist is not None and not hist.empty:
-            return float(hist["Close"].iloc[-1])
+        for period in ("5d", "1mo", "3mo"):
+            try:
+                hist = ticker.history(period=period, auto_adjust=True)
+            except Exception:
+                continue
+            if hist is not None and not hist.empty:
+                return float(hist["Close"].iloc[-1])
         return None

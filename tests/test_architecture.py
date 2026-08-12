@@ -184,7 +184,7 @@ def test_degiro_parser_extracts_ticker_qty_avg_cost():
     path = EXAMPLES / "degiro_portfolio_sample.csv"
     symbol_map = {
         "IE00BK5BQT80": "VWCE.DE",
-        "IE00B4WXJJ64": "IEGA.L",
+        "IE00B4WXJJ64": "EUN6.DE",
         "IE00B5BMR087": "SXR8.DE",
     }
     positions = parse_degiro_portfolio_csv(path, symbol_map=symbol_map)
@@ -196,10 +196,14 @@ def test_degiro_parser_extracts_ticker_qty_avg_cost():
     holdings = positions_to_holdings(
         positions,
         target_allocation=TargetAllocation(weights={AssetClass.EQUITY: 0.8, AssetClass.BOND: 0.2}),
-        asset_class_map={"VWCE.DE": AssetClass.EQUITY, "IEGA.L": AssetClass.BOND, "SXR8.DE": AssetClass.EQUITY},
+        asset_class_map={
+            "VWCE.DE": AssetClass.EQUITY,
+            "EUN6.DE": AssetClass.BOND,
+            "SXR8.DE": AssetClass.EQUITY,
+        },
     )
-    assert {h.symbol for h in holdings} == {"VWCE.DE", "IEGA.L", "SXR8.DE"}
-    assert next(h for h in holdings if h.symbol == "IEGA.L").asset_class == AssetClass.BOND
+    assert {h.symbol for h in holdings} == {"VWCE.DE", "EUN6.DE", "SXR8.DE"}
+    assert next(h for h in holdings if h.symbol == "EUN6.DE").asset_class == AssetClass.BOND
 
 
 def test_degiro_parser_requires_symbol_map_for_isin_only_rows(tmp_path):
@@ -324,7 +328,7 @@ def test_end_to_end_degiro_path(tmp_path):
         EXAMPLES / "degiro_portfolio_sample.csv",
         EXAMPLES / "target_allocation.yaml",
     )
-    prices = {"VWCE.DE": 110.0, "IEGA.L": 105.0, "SXR8.DE": 480.0}
+    prices = {"VWCE.DE": 110.0, "EUN6.DE": 105.0, "SXR8.DE": 480.0}
     market = FakeMarketData(
         prices=prices,
         history={s: pd.DataFrame({"Close": [100.0, 110.0, 105.0, 108.0]}) for s in prices},
