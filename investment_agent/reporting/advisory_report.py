@@ -33,7 +33,7 @@ _Nessuna azione long-term suggerita._
 {% else %}
 1. **{{ s.action.value }} {{ s.symbol }}** — {{ s.rationale_text }}
 {% endif %}
-   - Orizzonte: {{ s.hold_for or "5+ anni" }}
+   - **Lascia per:** {{ s.hold_for or "5+ anni" }}
 {% if s.indicative_notional is not none %}
    - Importo indicativo (manuale): {{ "%.2f"|format(s.indicative_notional) }} {{ report.portfolio.currency }}
 {% endif %}
@@ -57,7 +57,7 @@ _Nessuna azione short-term suggerita._
 {% else %}
 1. **{{ s.action.value }} {{ s.symbol }}** — {{ s.rationale_text }}
 {% endif %}
-   - Orizzonte: {{ s.hold_for or "3-6 mesi" }}
+   - **Tieni per:** {{ s.hold_for or "3-6 mesi" }} *(poi rivaluta)*
 {% if s.indicative_notional is not none %}
    - Importo indicativo (manuale): {{ "%.2f"|format(s.indicative_notional) }} {{ report.portfolio.currency }}
 {% endif %}

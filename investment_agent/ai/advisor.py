@@ -47,6 +47,7 @@ class RuleBasedAdvisor(AdvisorPort):
 
     LONG_HOLD = "5+ anni"
     SHORT_HOLD = "3-6 mesi"
+    SHORT_HOLD_TIGHT = "1-3 mesi"
 
     def suggest(self, snapshot: PortfolioSnapshot, store: EvidenceStore) -> list[Suggestion]:
         positions = {p.symbol: p for p in snapshot.positions}
@@ -85,6 +86,7 @@ class RuleBasedAdvisor(AdvisorPort):
             ret_ev = next((e for e in evidences if e.kind == MetricKind.PERIOD_RETURN), None)
             hist_ret = ret_ev.value if ret_ev is not None else None
             pos = positions.get(symbol)
+            short_hold = self._short_hold_window(dd_ev, vol_ev)
 
             # --- Long term: allocation / buy-and-hold rebalancing ---
             if weight_ev is not None and weight_ev.triggered and pos is not None:
@@ -176,20 +178,20 @@ class RuleBasedAdvisor(AdvisorPort):
                 if vol_ev is not None:
                     risk_bits.append(f"volatilità {vol_ev.value:.2f}%")
                 risk_txt = ", ".join(risk_bits)
+                hist_bit = (
+                    f"; rendimento storico osservato {hist_ret:+.2f}%"
+                    if hist_ret is not None
+                    else ""
+                )
                 if weight_ev is not None and weight_ev.value > 0:
                     action = ActionType.SELL
                     delta = max(pos.market_value - pos.target_weight * snapshot.total_value, 0)
                     shares = delta / pos.price if pos.price else None
                     headline = (
                         f"Per breve termine: riduci oggi su: {symbol} "
-                        f"(~{delta:.2f} {snapshot.currency}) e rivedi tra {self.SHORT_HOLD} "
-                        f"per contenere il rischio ({risk_txt}"
-                        + (
-                            f"; rendimento storico osservato {hist_ret:+.2f}%"
-                            if hist_ret is not None
-                            else ""
-                        )
-                        + " — non garanzia futura)."
+                        f"(~{delta:.2f} {snapshot.currency}), poi tieni la posizione residua "
+                        f"per {short_hold} e rivaluta a fine periodo "
+                        f"(rischio: {risk_txt}{hist_bit} — non garanzia futura)."
                     )
                 elif weight_ev is not None and weight_ev.value < 0:
                     action = ActionType.BUY
@@ -197,39 +199,29 @@ class RuleBasedAdvisor(AdvisorPort):
                     shares = delta / pos.price if pos.price else None
                     headline = (
                         f"Per breve termine: investi oggi su: {symbol} "
-                        f"(~{delta:.2f} {snapshot.currency}) con orizzonte {self.SHORT_HOLD}, "
-                        f"consapevole del rischio ({risk_txt}"
-                        + (
-                            f"; rendimento storico osservato {hist_ret:+.2f}%"
-                            if hist_ret is not None
-                            else ""
-                        )
-                        + " — non garanzia futura)."
+                        f"(~{delta:.2f} {snapshot.currency}) e tienili per {short_hold}; "
+                        f"a fine periodo rivaluta se mantenere o ribilanciare "
+                        f"(rischio: {risk_txt}{hist_bit} — non garanzia futura)."
                     )
                 else:
                     action = ActionType.REBALANCE
                     delta = None
                     shares = None
                     headline = (
-                        f"Per breve termine: rivedi oggi {symbol} e lascia in osservazione "
-                        f"per {self.SHORT_HOLD} a causa di {risk_txt}"
-                        + (
-                            f" (rendimento storico osservato {hist_ret:+.2f}%)"
-                            if hist_ret is not None
-                            else ""
-                        )
-                        + " — non garanzia futura)."
+                        f"Per breve termine: tieni {symbol} per {short_hold} in osservazione "
+                        f"(non aumentare l'esposizione ora); rivaluta a fine periodo "
+                        f"per {risk_txt}{hist_bit} — non garanzia futura)."
                     )
                 suggestions.append(
                     Suggestion(
                         action=action,
                         symbol=symbol,
                         horizon=InvestmentHorizon.SHORT_TERM,
-                        hold_for=self.SHORT_HOLD,
+                        hold_for=short_hold,
                         headline=headline,
                         rationale_text=(
-                            f"Breve termine su {symbol}: {risk_txt}. "
-                            "Nessun ordine automatico."
+                            f"Breve termine su {symbol}: tieni per {short_hold}. "
+                            f"Motivo rischio: {risk_txt}. Nessun ordine automatico."
                         ),
                         evidence_ids=risk_ids,
                         indicative_shares=round(shares, 4) if shares is not None else None,
@@ -269,6 +261,20 @@ class RuleBasedAdvisor(AdvisorPort):
                 )
             ]
         return suggestions
+
+    @classmethod
+    def _short_hold_window(
+        cls,
+        dd_ev: MetricEvidence | None,
+        vol_ev: MetricEvidence | None,
+    ) -> str:
+        """Pick an explicit short hold window from risk severity."""
+        severe = False
+        if dd_ev is not None and dd_ev.value >= dd_ev.threshold * 1.5:
+            severe = True
+        if vol_ev is not None and vol_ev.value >= vol_ev.threshold * 1.5:
+            severe = True
+        return cls.SHORT_HOLD_TIGHT if severe else cls.SHORT_HOLD
 
     @staticmethod
     def _risk_clause(dd_ev: MetricEvidence | None, vol_ev: MetricEvidence | None) -> str:
@@ -326,8 +332,8 @@ SYSTEM_PROMPT = """Sei un advisor ETF SOLO CONSULENZA. Rispondi SOLO JSON:
       "action": "BUY"|"SELL"|"HOLD"|"REBALANCE",
       "symbol": "TICKER",
       "horizon": "long_term"|"short_term",
-      "hold_for": "5+ anni" oppure "3-6 mesi",
-      "headline": "Investi oggi su: TICKER ... e lascia per ... per guadagno storico osservato di ...% (non garanzia)",
+      "hold_for": "5+ anni" oppure "3-6 mesi" oppure "1-3 mesi",
+      "headline": "Per breve termine: investi oggi su: TICKER e tienili per 3-6 mesi; a fine periodo rivaluta. Rendimento storico osservato ...% (non garanzia)",
       "rationale_text": "testo con scostamento esatto e rischio dalle evidence",
       "evidence_ids": ["id1"],
       "indicative_shares": null,

@@ -21,7 +21,7 @@ Non eseguire ordini. Non inventare numeri.
 
 Devi produrre raccomandazioni in italiano in due orizzonti:
 - long_term: "Investi oggi su: TICKER ... e lascia per 5+ anni ..."
-- short_term: "Per breve termine: investi oggi su: TICKER ... e lascia per 3-6 mesi ..."
+- short_term: "Per breve termine: investi oggi su: TICKER ... e tienili per 3-6 mesi (o 1-3 mesi se rischio alto); a fine periodo rivaluta ..."
 
 Il 'guadagno' può citare SOLO il period_return storico osservato dalle evidence
 (con la frase 'non garanzia futura'). Mai previsioni inventate.

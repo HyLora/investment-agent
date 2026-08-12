@@ -323,6 +323,11 @@ def test_rule_based_long_and_short_headlines():
     assert long
     assert any(s.headline and "Investi oggi" in s.headline or (s.headline and "Riduci oggi" in s.headline) for s in long)
     assert short
+    assert any(s.hold_for for s in short)
+    assert any(
+        s.headline and ("tieni" in s.headline.lower() or "tienili" in s.headline.lower())
+        for s in short
+    )
     assert any(s.headline and "breve termine" in s.headline.lower() for s in short)
 
 
