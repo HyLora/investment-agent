@@ -285,6 +285,9 @@ def test_merge_ollama_keeps_locked_sell_on_overweight():
     assert merged.action == ActionType.SELL
     assert merged.headline.startswith("Riduci oggi")
     assert merged.indicative_notional == 100.0
+
+
+def test_binder_rejects_unknown_evidence():
     store = EvidenceStore(
         [
             MetricEvidence(
