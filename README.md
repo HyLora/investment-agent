@@ -1,103 +1,107 @@
 # InvestmentAgent
 
-Agente consultivo per il monitoraggio di un portafoglio di ETF.
+Agente **consultivo locale** per un portafoglio di ETF.
 
-Scarica dati storici e quote di mercato tramite **yfinance**, calcola metriche deterministiche (scostamento dai pesi target, drawdown, ecc.), chiede a un LLM eventuali azioni di ribilanciamento e **vincola ogni suggerimento alle metriche esatte** che lo hanno scatenato. Esporta un report consultivo: **l'esecuzione degli ordini resta totalmente all'utente**.
-
-> **Repo dedicata:** questo progetto è `investment-agent`, non `expense-agent`.  
-> Se stai leggendo questo codice su un remote errato, crea `HyLora/investment-agent` e sposta il remote (vedi [Migrazione repo](#migrazione-repo)).
+1. Legge il CSV esportato da **DEGIRO** (solo file locale — **nessuna credenziale bancaria**)
+2. Scarica prezzi live e storico (default **6 mesi**) con **yfinance**
+3. Calcola in modo deterministico scostamento vs `target_allocation` e drawdown
+4. Chiede a un **LLM locale (Ollama)** raccomandazioni spiegabili (il LLM non calcola)
+5. Esporta un **report Markdown**; l'esecuzione degli ordini resta all'utente
 
 ## Principi
 
 | Principio | Comportamento |
 |-----------|----------------|
-| Solo advisory | Nessun broker, nessun ordine, nessuna API di trading |
-| Metriche prima del LLM | Le soglie e gli scostamenti sono calcolati in modo deterministico |
-| Explainability obbligatoria | Ogni suggerimento cita `MetricEvidence` con valori numerici verificabili |
-| Report esportabile | Markdown + JSON per revisione umana |
+| Sicurezza locale | Nessun login broker, nessuna password, nessun IBAN |
+| Solo advisory | Nessun order routing |
+| Metriche prima del LLM | Scostamenti e drawdown calcolati deterministicamente |
+| Explainability | Ogni suggerimento cita `MetricEvidence` con valori esatti |
+| Report esportabile | Markdown (+ JSON audit) |
 
 ## Architettura
 
 ```
 investment_agent/
-├── config/           # Portafoglio target, soglie, settings
-├── domain/           # Modelli (Holding, Portfolio, Suggestion) e metriche
-├── data/             # Client yfinance (storico + quote)
-├── analytics/        # Monitor pesi, drawdown, trigger di ribilanciamento
-├── explainability/   # Evidence store + binder LLM ↔ metriche
-├── ai/               # Advisor LLM (prompt + parsing strutturato)
-├── reporting/        # Export report consultivo (MD/JSON)
-└── orchestration/    # InvestmentAgent: pipeline end-to-end
+├── ingestion/portfolio_parser.py   # CSV DEGIRO → ticker, qty, avg cost
+├── data/yfinance_client.py         # quote + storico
+├── analytics/                      # monitor pesi + metrics engine
+├── explainability/                 # evidence store + binder
+├── ai/ollama_advisor.py            # LLM locale
+├── ai/advisor.py                   # rule-based fallback
+├── reporting/advisory_report.py    # Markdown
+└── orchestration/agent.py          # pipeline
 ```
-
-Flusso:
-
-1. **Ingest** — quote e storico ETF via yfinance  
-2. **Analytics** — pesi correnti, scostamento %, drawdown, volatilità  
-3. **Evidence** — ogni metrica fuori soglia diventa `MetricEvidence` con id stabile  
-4. **AI Advisor** — LLM riceve solo evidence; deve citare gli id nelle raccomandazioni  
-5. **Binder** — scarta o marca invalidi i suggerimenti senza metriche collegate  
-6. **Report** — export consultivo; nessuna esecuzione
 
 Dettaglio: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ## Quick start
 
+Il comando `investment-agent` esiste **solo dopo** l'installazione del pacchetto
+nella cartella del repository (non dalla home `~`).
+
 ```bash
-python -m venv .venv && source .venv/bin/activate
+# 1. Entra nel clone del repo
+cd /path/to/investment-agent
+
+# 2. Ambiente Python (venv oppure conda)
+python3 -m venv .venv && source .venv/bin/activate
+# oppure: conda create -n investment-agent python=3.11 -y && conda activate investment-agent
+
+# 3. Installa il pacchetto in editable mode (crea il comando CLI)
 pip install -e ".[dev]"
 
-# Analisi portafoglio di esempio (LLM opzionale / fallback rule-based)
+# 4. Verifica
+which investment-agent
+investment-agent --help
+
+# 5. Run di esempio (path relativi alla root del repo)
+investment-agent run \
+  --degiro examples/degiro_portfolio_sample.csv \
+  --config examples/target_allocation.yaml \
+  --output output/
+```
+
+Se `investment-agent` non è ancora nel PATH, usa il modulo direttamente:
+
+```bash
+python -m investment_agent run \
+  --degiro examples/degiro_portfolio_sample.csv \
+  --config examples/target_allocation.yaml \
+  --output output/
+```
+
+Oppure da YAML holdings:
+
+```bash
 investment-agent run --portfolio examples/portfolio.yaml --output output/
 ```
 
-Senza API key LLM il sistema usa un advisor **rule-based** che genera suggerimenti comunque legati alle metriche (utile offline e per test).
+Senza Ollama in ascolto il sistema usa il **rule-based advisor** (sempre offline), comunque legato alle metriche.
 
-## Configurazione portafoglio
+## Config `target_allocation`
 
 ```yaml
-# examples/portfolio.yaml
-name: core-etf
-currency: EUR
-cash: 1000.0
-holdings:
-  - symbol: VWCE.DE
-    shares: 40
-    target_weight: 0.60
-  - symbol: AGGH.MI
-    shares: 80
-    target_weight: 0.30
-  - symbol: SXR8.DE
-    shares: 10
-    target_weight: 0.10
+# examples/target_allocation.yaml
+target_allocation:
+  equity: 0.80
+  bond: 0.20
+symbol_map:
+  IE00BK5BQT80: VWCE.DE
 thresholds:
-  weight_deviation_pct: 5.0   # scostamento assoluto dal target (pp)
+  history_period: 6mo
+  weight_deviation_pct: 5.0
   max_drawdown_pct: 15.0
 ```
 
 ## Explainability
 
-Ogni raccomandazione nel report include:
+Ogni raccomandazione include:
 
-- azione proposta (`BUY` / `SELL` / `HOLD` / `REBALANCE`)
-- ticker e quantità **indicativa** (non eseguita)
-- elenco di `MetricEvidence`: tipo, valore, soglia, formula, timestamp
-- testo LLM solo come narrativa; i numeri restano quelli del motore analitico
-
-## Migrazione repo
-
-Questo agente cloud era collegato a `expense-agent` per errore. Per la repo dedicata:
-
-```bash
-# 1. Su GitHub: crea il repository vuoto HyLora/investment-agent (senza README)
-# 2. Poi dal clone di questo progetto:
-git remote rename origin expense-agent-old   # opzionale
-git remote add origin https://github.com/HyLora/investment-agent.git
-git push -u origin main
-# oppure, se lavori su un branch feature:
-git push -u origin HEAD:main
-```
+- azione (`BUY` / `SELL` / `HOLD` / `REBALANCE`)
+- quantità **indicativa** (non eseguita)
+- `MetricEvidence`: scostamento %, drawdown, volatilità, formula, soglia
+- testo LLM solo come narrativa; i numeri restano del motore analitico
 
 ## Disclaimer
 
-Software a scopo educativo/consultivo. Non costituisce consulenza finanziaria. Verifica sempre i dati e le decisioni di investimento in autonomia.
+Software educativo/consultivo. Non costituisce consulenza finanziaria.

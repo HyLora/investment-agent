@@ -3,7 +3,12 @@
 from investment_agent.domain.models import (
     ActionType,
     AdvisoryReport,
+    AgentConfig,
+    AssetClass,
+    AssetClassWeight,
+    DegiroPosition,
     Holding,
+    InvestmentHorizon,
     MarketQuote,
     MetricEvidence,
     MetricKind,
@@ -11,6 +16,7 @@ from investment_agent.domain.models import (
     PortfolioSnapshot,
     Position,
     Suggestion,
+    TargetAllocation,
     Thresholds,
     new_evidence_id,
 )
@@ -18,7 +24,12 @@ from investment_agent.domain.models import (
 __all__ = [
     "ActionType",
     "AdvisoryReport",
+    "AgentConfig",
+    "AssetClass",
+    "AssetClassWeight",
+    "DegiroPosition",
     "Holding",
+    "InvestmentHorizon",
     "MarketQuote",
     "MetricEvidence",
     "MetricKind",
@@ -26,6 +37,7 @@ __all__ = [
     "PortfolioSnapshot",
     "Position",
     "Suggestion",
+    "TargetAllocation",
     "Thresholds",
     "new_evidence_id",
 ]

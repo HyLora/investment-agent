@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "investment-agent"
 version = "0.1.0"
-description = "Advisory InvestmentAgent: ETF portfolio monitoring with explainable LLM rebalancing suggestions"
+description = "Local advisory InvestmentAgent: DEGIRO CSV ingest, yfinance metrics, explainable Ollama suggestions"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -21,6 +21,7 @@ dependencies = [
 
 [project.optional-dependencies]
 llm = ["openai>=1.30.0"]
+langchain = ["langchain>=0.2.0", "langchain-community>=0.2.0"]
 dev = ["pytest>=8.2.0", "pytest-cov>=5.0.0"]
 
 [project.scripts]

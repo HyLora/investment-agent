@@ -1,0 +1,6 @@
+# Sample DEGIRO-like portfolio export (synthetic data — not a real account).
+# Columns mirror common DEGIRO Portfolio CSV headers (EN).
+Product,ISIN,Quantity,Break-even price,Close price,Local value,Local currency
+Vanguard FTSE All-World UCITS ETF,IE00BK5BQT80,40,95.50,110.00,4400.00,EUR
+iShares Core EUR Govt Bond UCITS ETF,IE00B4WXJJ64,80,110.00,105.00,8400.00,EUR
+iShares Core S&P 500 UCITS ETF,IE00B5BMR087,10,420.00,480.00,4800.00,EUR
