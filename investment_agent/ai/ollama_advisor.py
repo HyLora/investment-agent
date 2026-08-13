@@ -1,8 +1,7 @@
 """Local LLM advisor via Ollama (no cloud API keys, no bank credentials).
 
-The model receives pre-computed :class:`MetricEvidence` only. It must not
-invent numbers; every non-HOLD suggestion must cite ``evidence_ids`` and
-mention the exact deviation / risk parameter from those metrics.
+Ollama narrates a **locked plan** computed from MetricEvidence. It must not
+change BUY/SELL, sizes, or evidence ids — those stay deterministic.
 """
 
 from __future__ import annotations
@@ -13,44 +12,55 @@ import urllib.request
 from typing import Any
 
 from investment_agent.ai.advisor import AdvisorPort, _parse_suggestions
+from investment_agent.ai.grounding import build_locked_plan, merge_ollama_narration
 from investment_agent.domain.models import PortfolioSnapshot
 from investment_agent.explainability.evidence import EvidenceStore
 
 OLLAMA_SYSTEM_PROMPT = """Sei un advisor ETF in modalità SOLO CONSULENZA (locale).
-Non eseguire ordini. Non inventare numeri.
+Non eseguire ordini. Non inventare numeri. Non calcolare scostamenti.
 
-Devi produrre raccomandazioni in italiano in due orizzonti:
-- long_term: "Investi oggi su: TICKER ... e lascia per 5+ anni ..."
-- short_term: "Per breve termine: investi oggi su: TICKER ... e tienili per 3-6 mesi (o 1-3 mesi se rischio alto); a fine periodo rivaluta ..."
+Ricevi un LOCKED_PLAN già calcolato dalle metriche. Il tuo unico compito è
+riscrivere in italiano chiaro i campi rationale_text (e opzionalmente headline)
+SENZA cambiare:
+- action (BUY/SELL/HOLD/REBALANCE)
+- symbol
+- horizon / hold_for
+- evidence_ids
+- indicative_shares / indicative_notional
+- historical_return_pct
 
-Il 'guadagno' può citare SOLO il period_return storico osservato dalle evidence
-(con la frase 'non garanzia futura'). Mai previsioni inventate.
+Regole di coerenza (già applicate nel piano; rispettale nel testo):
+- weight_deviation > 0 (sovrappeso) ⇒ SELL / "Riduci oggi"
+- weight_deviation < 0 (sottopeso) ⇒ BUY / "Investi oggi"
+- Non dire "Investi" su un titolo in SELL e viceversa.
+- Cita solo valori presenti nel LOCKED_PLAN / evidence.
+- period_return = rendimento storico osservato, NON una previsione.
+- Per breve termine usa sempre "tieni per {hold_for}" in modo esplicito.
 
-Regole:
-1. Usa solo MetricEvidence fornite (scostamento, drawdown, volatilità, period_return).
-2. Ogni non-HOLD deve avere evidence_ids esistenti.
-3. Rispondi SOLO JSON:
+Rispondi SOLO JSON:
 {
   "suggestions": [
     {
       "action": "BUY"|"SELL"|"HOLD"|"REBALANCE",
       "symbol": "TICKER",
       "horizon": "long_term"|"short_term",
-      "hold_for": "5+ anni"|"3-6 mesi",
-      "headline": "Investi oggi su: ... e lascia per ... (rendimento storico osservato ...% — non garanzia futura)",
-      "rationale_text": "scostamento esatto + parametro di rischio",
-      "evidence_ids": ["id"],
+      "hold_for": "...",
+      "headline": "...",
+      "rationale_text": "...",
+      "evidence_ids": ["..."],
       "indicative_shares": null,
       "indicative_notional": null,
       "historical_return_pct": null
     }
   ]
 }
+Copia action/symbol/horizon/hold_for/evidence_ids/indicative_* /historical_return_pct
+esattamente dal LOCKED_PLAN. Riscrivi solo rationale_text (headline opzionale).
 """
 
 
 class OllamaAdvisor(AdvisorPort):
-    """Explainable advisor backed by a local Ollama HTTP endpoint."""
+    """Explainable advisor: deterministic plan + Ollama narration."""
 
     backend_name = "ollama"
 
@@ -65,19 +75,41 @@ class OllamaAdvisor(AdvisorPort):
         self.timeout_sec = timeout_sec
 
     def suggest(self, snapshot: PortfolioSnapshot, store: EvidenceStore):
-        """Ask the local LLM for grounded rebalancing suggestions."""
+        """Build locked plan, ask Ollama to narrate, merge without breaking grounding."""
+        plan = build_locked_plan(snapshot, store)
         payload = {
-            "portfolio": snapshot.model_dump(mode="json"),
-            "evidence": [e.model_dump(mode="json") for e in store.all()],
-            "triggered_evidence_ids": [e.evidence_id for e in store.triggered()],
+            "locked_plan": [s.model_dump(mode="json") for s in plan],
+            "portfolio": {
+                "name": snapshot.name,
+                "currency": snapshot.currency,
+                "total_value": snapshot.total_value,
+                "positions": [
+                    {
+                        "symbol": p.symbol,
+                        "current_weight": p.current_weight,
+                        "target_weight": p.target_weight,
+                        "weight_deviation_pp": p.weight_deviation_pp,
+                        "asset_class": p.asset_class.value,
+                    }
+                    for p in snapshot.positions
+                ],
+                "asset_class_weights": [
+                    c.model_dump(mode="json") for c in snapshot.asset_class_weights
+                ],
+            },
+            "triggered_evidence": [e.model_dump(mode="json") for e in store.triggered()],
             "instructions": (
-                "Produce long_term and short_term headlines. "
-                "Do not invent metrics. Quote exact deviation and risk from evidence. "
-                "historical_return_pct only from period_return evidence."
+                "Narrate the locked_plan only. Do not flip BUY/SELL. "
+                "Overweight => Riduci/SELL. Underweight => Investi/BUY."
             ),
         }
-        content = self._chat(payload)
-        return _parse_suggestions(content)
+        try:
+            content = self._chat(payload)
+            llm_suggestions = _parse_suggestions(content)
+            return merge_ollama_narration(plan, llm_suggestions)
+        except Exception:
+            # If Ollama returns unusable JSON, keep the grounded plan (still ollama path intent).
+            return plan
 
     def _chat(self, user_payload: dict[str, Any]) -> str:
         body = json.dumps(
@@ -103,7 +135,7 @@ class OllamaAdvisor(AdvisorPort):
         except urllib.error.URLError as exc:
             raise ConnectionError(
                 f"Ollama non raggiungibile su {self.base_url}. "
-                "Avvia Ollama in locale oppure usa il fallback rule-based."
+                "Avvia Ollama in locale (già in uso se 'address already in use')."
             ) from exc
         message = raw.get("message") or {}
         return message.get("content") or "{}"

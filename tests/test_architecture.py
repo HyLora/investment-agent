@@ -227,7 +227,64 @@ def test_load_portfolio_from_degiro_sample():
     assert len(cfg.holdings) == 3
 
 
-def test_binder_rejects_unknown_evidence():
+def test_binder_rejects_buy_on_overweight():
+    eid = new_evidence_id("weight_deviation", "AAA")
+    store = EvidenceStore(
+        [
+            MetricEvidence(
+                evidence_id=eid,
+                kind=MetricKind.WEIGHT_DEVIATION,
+                symbol="AAA",
+                value=8.0,
+                threshold=5.0,
+                unit="pp",
+                formula="test",
+                triggered=True,
+            )
+        ]
+    )
+    sug = Suggestion(
+        action=ActionType.BUY,
+        symbol="AAA",
+        rationale_text="investi",
+        evidence_ids=[eid],
+    )
+    bound = ExplainabilityBinder().bind([sug], store)[0]
+    assert bound.explainability_valid is False
+    assert any("BUY contradicts" in n for n in bound.validation_notes)
+
+
+def test_merge_ollama_keeps_locked_sell_on_overweight():
+    from investment_agent.ai.grounding import merge_ollama_narration
+    from investment_agent.domain.models import InvestmentHorizon
+
+    plan = [
+        Suggestion(
+            action=ActionType.SELL,
+            symbol="EUN6.DE",
+            horizon=InvestmentHorizon.LONG_TERM,
+            hold_for="5+ anni",
+            headline="Riduci oggi su: EUN6.DE di circa 100 EUR",
+            rationale_text="sovrappeso 15 pp",
+            evidence_ids=["weight_deviation:EUN6.DE:abc"],
+            indicative_notional=100.0,
+        )
+    ]
+    llm = [
+        Suggestion(
+            action=ActionType.BUY,
+            symbol="EUN6.DE",
+            horizon=InvestmentHorizon.LONG_TERM,
+            hold_for="5+ anni",
+            headline="Investi oggi su: EUN6.DE",
+            rationale_text="compra perché sì",
+            evidence_ids=["weight_deviation:EUN6.DE:abc"],
+        )
+    ]
+    merged = merge_ollama_narration(plan, llm)[0]
+    assert merged.action == ActionType.SELL
+    assert merged.headline.startswith("Riduci oggi")
+    assert merged.indicative_notional == 100.0
     store = EvidenceStore(
         [
             MetricEvidence(
